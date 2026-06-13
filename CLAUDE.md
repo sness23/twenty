@@ -39,11 +39,13 @@ npx nx storybook:test twenty-front
 ```
 
 ### Code Quality
+Linting and formatting use **oxlint** + **oxfmt** (not ESLint/Prettier). Custom rules live in `packages/twenty-oxlint-rules` and are built automatically before any lint task. `lint` runs both oxlint and an oxfmt `--check`; the `fix` configuration runs `oxlint --fix` then `oxfmt`.
+
 ```bash
 # Linting (diff with main - fastest, always prefer this)
 npx nx lint:diff-with-main twenty-front
 npx nx lint:diff-with-main twenty-server
-npx nx lint:diff-with-main twenty-front --configuration=fix  # Auto-fix
+npx nx lint:diff-with-main twenty-front --configuration=fix  # Auto-fix lint + format
 
 # Linting (full project - slower, use only when needed)
 npx nx lint twenty-front
@@ -53,7 +55,7 @@ npx nx lint twenty-server
 npx nx typecheck twenty-front
 npx nx typecheck twenty-server
 
-# Format code
+# Format only (oxfmt)
 npx nx fmt twenty-front
 npx nx fmt twenty-server
 ```
@@ -105,16 +107,25 @@ npx nx run twenty-front:graphql:generate --configuration=metadata
 ### Package Structure
 ```
 packages/
-├── twenty-front/          # React frontend application
-├── twenty-server/         # NestJS backend API
-├── twenty-ui/             # Shared UI components library
-├── twenty-shared/         # Common types and utilities
-├── twenty-emails/         # Email templates with React Email
-├── twenty-website/    # Next.js marketing website
-├── twenty-docs/           # Documentation website
-├── twenty-zapier/         # Zapier integration
-└── twenty-e2e-testing/    # Playwright E2E tests
+├── twenty-front/                   # React frontend application
+├── twenty-server/                  # NestJS backend API
+├── twenty-ui/                      # Shared UI components library
+├── twenty-shared/                  # Common types and utilities (build FIRST — others depend on it)
+├── twenty-emails/                  # Email templates with React Email
+├── twenty-website/                 # Next.js marketing website
+├── twenty-docs/                    # Documentation website
+├── twenty-zapier/                  # Zapier integration
+├── twenty-e2e-testing/             # Playwright E2E tests
+├── twenty-oxlint-rules/            # Custom oxlint rules (built before any lint task)
+├── twenty-front-component-renderer/ # Renders server-defined "front components"
+└── app-as-code SDK & CLI:
+    ├── create-twenty-app/          # `npx create-twenty-app` scaffolder
+    ├── twenty-cli/                 # Twenty CLI
+    ├── twenty-sdk/                 # `defineObject`/`FieldType` — define objects/fields/views as code
+    └── twenty-client-sdk/          # Typed API client
 ```
+
+**App-as-code:** Twenty supports defining a CRM schema (objects, fields, views) in TypeScript via `twenty-sdk/define` and deploying it with the CLI. See README and `packages/twenty-sdk`. This is a first-class paradigm, not just an integration.
 
 ### Key Development Principles
 - **Functional components only** (no class components)
@@ -158,6 +169,18 @@ packages/
 - **GraphQL** API with code-first approach
 - **Redis** for caching and session management
 - **BullMQ** for background job processing
+
+### Multi-Tenant & Metadata Architecture (the big picture)
+This is the core mental model for the server — understanding it is required before touching object/field/view/permission code.
+
+- **Three schema layers in Postgres**:
+  - `core` — instance-wide tables (users, workspaces, billing, feature flags). Modeled by static `*.entity.ts` files under `engine/core-modules/`. Changes here require **instance commands** (see Database & Upgrade Commands).
+  - `metadata` — per-workspace *definitions* of objects, fields, views, roles, etc. (`objectMetadata`, `fieldMetadata`, ...). Lives under `engine/metadata-modules/`.
+  - `workspace_<id>` — one schema **per workspace** holding the actual CRM records. Tables here are generated dynamically from the metadata layer, not from static entities.
+- **twenty-orm** (`engine/twenty-orm/`) is a wrapper over TypeORM that builds repositories dynamically from a workspace's metadata, scoped to the right `workspace_<id>` schema. CRM record access goes through twenty-orm, not raw TypeORM repositories.
+- **Workspace records are queried via the auto-generated GraphQL API**, whose schema is generated from each workspace's metadata at runtime — this is why `graphql:generate --configuration=metadata` exists and why metadata-table bugs surface as GraphQL schema problems.
+- **Syncable entities & flat entities** (`engine/metadata-modules/flat-*`): metadata entities that participate in the **workspace-migration** pipeline are modeled three ways — TypeORM entity (DB), *flat entity* (denormalized, relation-free, cached), and *universal flat entity* (foreign keys mapped to `universalIdentifier` for cross-workspace/app sync). New metadata entities flow: Input DTO → transform → universal flat entity → builder/validator → runner → DB. To add one, follow `.cursor/rules/creating-syncable-entity.mdc` and the `.cursor/skills/syncable-entity-*` skills exactly (registration is spread across ~5 central constants and 3 NestJS modules).
+- **Server feature modules** split by concern: `engine/core-modules/` (instance services), `engine/metadata-modules/` (definitions + migration), and `modules/` (CRM business objects like company, person, opportunity, messaging, workflow).
 
 ### Database & Upgrade Commands
 - **PostgreSQL** as primary database
